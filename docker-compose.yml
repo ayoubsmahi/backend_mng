@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16
+    container_name: drone_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: dronepass
+      POSTGRES_DB: drone_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    container_name: drone_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/code/uploads
+
+volumes:
+  postgres_data:
