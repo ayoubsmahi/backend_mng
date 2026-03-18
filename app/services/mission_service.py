@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 
+from app.models.expense import Expense
 from app.models.mission import Mission
 from app.models.mission_enums import MissionStatus, PaymentStatus
+from app.models.mission_note import MissionNote
 from app.models.user import UserRole
 
 
@@ -210,3 +212,18 @@ def complete_mission(db: Session, mission_id: int, data, current_user):
     db.commit()
     db.refresh(mission)
     return mission
+
+
+def delete_mission(db: Session, mission_id: int, current_user):
+    mission = get_mission_or_none(db, mission_id)
+    if not mission:
+        return None
+
+    if current_user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
+        return None
+
+    db.query(MissionNote).filter(MissionNote.mission_id == mission_id).delete()
+    db.query(Expense).filter(Expense.mission_id == mission_id).update({"mission_id": None})
+    db.delete(mission)
+    db.commit()
+    return True

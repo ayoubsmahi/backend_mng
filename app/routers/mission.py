@@ -18,6 +18,7 @@ from app.schemas.mission import (
 from app.services.mission_service import (
     complete_mission,
     create_mission,
+    delete_mission,
     get_missions,
     start_mission,
     update_mission,
@@ -157,3 +158,15 @@ def change_finance(
     if not mission:
         raise HTTPException(status_code=404, detail="Mission not found")
     return mission
+
+
+@router.delete("/{mission_id}")
+def delete_mission_endpoint(
+    mission_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_roles(UserRole.SUPER_ADMIN, UserRole.ADMIN)),
+):
+    deleted = delete_mission(db, mission_id, current_user)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return {"message": "Mission deleted"}
