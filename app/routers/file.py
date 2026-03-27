@@ -6,6 +6,14 @@ from fastapi import APIRouter, Depends, File as FastAPIFile, HTTPException, Uplo
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy.orm import Session
 
+from app.core.r2_storage import (
+    build_r2_key,
+    delete_r2_object,
+    normalize_db_path_to_r2_key,
+    r2_enabled,
+    stream_r2_object,
+    upload_bytes_to_r2,
+)
 from app.core.dependencies import get_current_user, get_db
 from app.models.expense import Expense
 from app.models.file import File
@@ -15,7 +23,7 @@ from app.schemas.file import FileResponse
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 ALLOWED_ENTITY_TYPES = ["mission", "expense", "finance", "bank", "authority"]
 
 
@@ -69,17 +77,29 @@ def upload_file(
     normalized_entity_id = _ensure_entity_access(entity_type, entity_id, db, current_user)
 
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
-    entity_path = os.path.join(UPLOAD_DIR, entity_type, str(normalized_entity_id))
-    os.makedirs(entity_path, exist_ok=True)
+    file_path: str
+    file_size: int
 
-    file_path = os.path.join(entity_path, unique_filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(file.file.read())
+    if r2_enabled():
+        content = file.file.read()
+        file_size = len(content)
+        key = build_r2_key(entity_type, normalized_entity_id, unique_filename)
+        upload_bytes_to_r2(key=key, content=content, content_type=file.content_type)
+        file_path = f"r2:{key}"
+    else:
+        entity_path = os.path.join(UPLOAD_DIR, entity_type, str(normalized_entity_id))
+        os.makedirs(entity_path, exist_ok=True)
+
+        file_path = os.path.join(entity_path, unique_filename)
+        content = file.file.read()
+        file_size = len(content)
+        with open(file_path, "wb") as buffer:
+            buffer.write(content)
 
     new_file = File(
         file_name=file.filename,
         file_path=file_path,
-        file_size=os.path.getsize(file_path),
+        file_size=file_size,
         mime_type=file.content_type,
         entity_type=entity_type,
         entity_id=normalized_entity_id,
@@ -103,6 +123,15 @@ def download_file(
         raise HTTPException(status_code=404, detail="File not found")
 
     _ensure_entity_access(file.entity_type, file.entity_id, db, current_user)
+
+    if r2_enabled() and file.file_path and file.file_path.startswith("r2:"):
+        key = normalize_db_path_to_r2_key(file.file_path)
+        return stream_r2_object(key=key, download_name=file.file_name, content_type=file.mime_type)
+
+    if not os.path.exists(file.file_path):
+        # Happens on ephemeral disks after deploy/restart/scale when uploads were stored locally.
+        raise HTTPException(status_code=404, detail="File content missing on server storage")
+
     return FastAPIFileResponse(path=file.file_path, filename=file.file_name)
 
 
@@ -134,8 +163,12 @@ def delete_file(
 
     _ensure_entity_access(file.entity_type, file.entity_id, db, current_user)
 
-    if os.path.exists(file.file_path):
-        os.remove(file.file_path)
+    if r2_enabled() and file.file_path and file.file_path.startswith("r2:"):
+        key = normalize_db_path_to_r2_key(file.file_path)
+        delete_r2_object(key=key)
+    else:
+        if os.path.exists(file.file_path):
+            os.remove(file.file_path)
 
     db.delete(file)
     db.commit()
